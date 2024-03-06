@@ -164,23 +164,89 @@ static int __try_size_t_multiply(size_t *c, size_t a, size_t b) {
 
 void __free_impl(void *);
 
+
+/*
+*/
 void *__malloc_impl(size_t size) {
-  /* STUB */
-  return NULL;
+  /* allocates size bytes of memory, 
+  RETURNS: pointer to the allocated memory, 
+  if size is 0, the function returns NULL or a unique pointer to be passed to free()
+  
+   */
+  if (size == ((size_t)0)) {
+    return NULL;
+  }
+  void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (ptr == MAP_FAILED) {
+    return NULL;
+  }
+  return ptr;
 }
 
 void *__calloc_impl(size_t nmemb, size_t size) {
-  /* STUB */
+  /*nmemb:  number of elements in array ,
+  size: amount of bytes in each element
+  RETURNS: pointer to the allocated memory, or NULL if the request fails and
+  sets memory to zero,
+
+  if nmemb or size is 0, the function returns NULL or a unique pointer to be passed to free()
+  if multiplication of nmemb and size results in overflow, the function returns an error
+  
+  */
+  size_t total_size;
+  if (__try_size_t_multiply(&total_size, nmemb, size)) {
+    void *ptr = __malloc_impl(total_size);
+    if (ptr) {
+      __memset(ptr, 0, total_size);
+    }
+    return ptr;
+  }
+  
   return NULL;  
 }
 
 void *__realloc_impl(void *ptr, size_t size) {
-  /* STUB */
-  return NULL;  
+  /*ptr: pointer to the memory block to be reallocated,
+  size: new size for the memory block
+  RETURNS: pointer to the reallocated memory, or NULL if the request fails
+  
+  if ptr is NULL, the function behaves like malloc() for the specified size
+  if size is 0 and ptr is not NULL, the function behaves like free() and returns NULL
+  if the size is less than the size of the original memory block, the memory block is truncated to the new size
+  if the size is greater than the size of the original memory block, the function behaves like malloc() for the specified size
+  */
+  if (ptr == NULL) {
+    return __malloc_impl(size);
+  }
+  if (size == ((size_t)0)) {
+    __free_impl(ptr);
+    return NULL;
+  }
+  void *new_ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (new_ptr == MAP_FAILED) {
+    return NULL;
+  }
+  __memcpy(new_ptr, ptr, size);
+  __free_impl(ptr);
+  return new_ptr;
+ 
 }
 
 void __free_impl(void *ptr) {
-  /* STUB */
+  /*ptr: pointer to the memory to be deallocated,
+  RETURNS: nothing
+  
+  if ptr is NULL, the function does nothing
+  */
+  if (ptr == NULL) {
+    return;
+  }
+  if (munmap(ptr, 0) == -1) {
+    //error here not sure what to do tho
+    return;
+  }
+  
+  return;
 }
 
 /* End of the actual malloc/calloc/realloc/free functions */
