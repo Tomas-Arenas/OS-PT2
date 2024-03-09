@@ -57,6 +57,12 @@
 
 #include <stddef.h>
 #include <sys/mman.h>
+#include <stdio.h>
+#include <errno.h>
+#include <string.h>
+
+
+
 
 /* Predefined helper functions */
 
@@ -157,6 +163,14 @@ static int __try_size_t_multiply(size_t *c, size_t a, size_t b) {
 
 */
 
+typedef struct block {
+  size_t size;
+  struct block *next;
+} block;
+
+struct block *free_list = NULL;
+
+
 
 /* End of your helper functions */
 
@@ -165,17 +179,47 @@ static int __try_size_t_multiply(size_t *c, size_t a, size_t b) {
 void __free_impl(void *);
 
 
+
+
 /*
 */
 void *__malloc_impl(size_t size) {
   /* allocates size bytes of memory, 
   RETURNS: pointer to the allocated memory, 
-  if size is 0, the function returns NULL or a unique pointer to be passed to free()
+  if size is 0, the function returns NULL or a unique pointer to be passed to free()*/
+  struct block *curr = free_list;
+  struct block *prev = NULL;
+  while(curr){
+    if(curr->size >= size){
+      //found a block that is bigger than needed
+      if(curr->size > size + sizeof(struct block)){
+        //new block is the remaining memory if the block is at least size + sizeof(struct block) bytes
+        //if not then we just use the whole block
+        struct block *new_block = (struct block *)((char *)curr + size + sizeof(struct block));
+        new_block->size = curr->size - (size + sizeof(struct block));
+        new_block->next = curr->next;
+        if(prev){
+          prev->next = new_block;
+        } else {
+          free_list = new_block;
+        }
+      } else {
+        //block is exactly the size needed
+        if(prev){
+          prev->next = curr->next;
+          //return the pointer to the start of the block
+        } else {
+          free_list = curr->next;
   
-   */
-  if (size == ((size_t)0)) {
-    return NULL;
-  }
+        }
+      }
+      //return the pointer to the start of the block
+      return (void *)((char *)curr + sizeof(struct block));
+    }
+    prev = curr;
+    curr = curr->next;
+}
+//if we get here then we didn't find a block big enough
   void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if (ptr == MAP_FAILED) {
     return NULL;
@@ -194,15 +238,15 @@ void *__calloc_impl(size_t nmemb, size_t size) {
   
   */
   size_t total_size;
-  if (__try_size_t_multiply(&total_size, nmemb, size)) {
-    void *ptr = __malloc_impl(total_size);
-    if (ptr) {
-      __memset(ptr, 0, total_size);
-    }
-    return ptr;
+  if (!__try_size_t_multiply(&total_size, nmemb, size)) {
+    return NULL;
   }
-  
-  return NULL;  
+  void *ptr = __malloc_impl(total_size);
+  if (ptr == NULL) {
+    return NULL;
+  }
+  __memset(ptr, 0, total_size);
+  return ptr;
 }
 
 void *__realloc_impl(void *ptr, size_t size) {
@@ -218,15 +262,19 @@ void *__realloc_impl(void *ptr, size_t size) {
   if (ptr == NULL) {
     return __malloc_impl(size);
   }
-  if (size == ((size_t)0)) {
+  if (size == 0) {
     __free_impl(ptr);
     return NULL;
   }
-  void *new_ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  if (new_ptr == MAP_FAILED) {
+  struct block *curr = (struct block *)((char *)ptr - sizeof(struct block));
+  if (curr->size >= size) {
+    return ptr;
+  }
+  void *new_ptr = __malloc_impl(size);
+  if (new_ptr == NULL) {
     return NULL;
   }
-  __memcpy(new_ptr, ptr, size);
+  __memcpy(new_ptr, ptr, curr->size);
   __free_impl(ptr);
   return new_ptr;
  
@@ -241,12 +289,9 @@ void __free_impl(void *ptr) {
   if (ptr == NULL) {
     return;
   }
-  if (munmap(ptr, 0) == -1) {
-    //error here not sure what to do tho
-    return;
-  }
-  
-  return;
+  struct block *curr = (struct block *)((char *)ptr - sizeof(struct block));
+  curr->next = free_list;
+  free_list = curr;
 }
 
 /* End of the actual malloc/calloc/realloc/free functions */
