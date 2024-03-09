@@ -61,9 +61,6 @@
 #include <errno.h>
 #include <string.h>
 
-
-
-
 /* Predefined helper functions */
 
 static void *__memset(void *s, int c, size_t n) {
@@ -165,10 +162,13 @@ static int __try_size_t_multiply(size_t *c, size_t a, size_t b) {
 
 typedef struct block {
   size_t size;
+  size_t alloc_mem;
+  size_t free_mem;
   struct block *next;
 } block;
 
 struct block *free_list = NULL;
+
 
 
 
@@ -179,52 +179,52 @@ struct block *free_list = NULL;
 void __free_impl(void *);
 
 
-
-
-/*
-*/
 void *__malloc_impl(size_t size) {
   /* allocates size bytes of memory, 
   RETURNS: pointer to the allocated memory, 
   if size is 0, the function returns NULL or a unique pointer to be passed to free()*/
+  size_t total_size = size + sizeof(struct block);
+  if(size == 0){
+    return NULL;
+  }
   struct block *curr = free_list;
   struct block *prev = NULL;
   while(curr){
-    if(curr->size >= size){
-      //found a block that is bigger than needed
-      if(curr->size > size + sizeof(struct block)){
-        //new block is the remaining memory if the block is at least size + sizeof(struct block) bytes
-        //if not then we just use the whole block
-        struct block *new_block = (struct block *)((char *)curr + size + sizeof(struct block));
-        new_block->size = curr->size - (size + sizeof(struct block));
-        new_block->next = curr->next;
-        if(prev){
-          prev->next = new_block;
-        } else {
-          free_list = new_block;
-        }
-      } else {
-        //block is exactly the size needed
-        if(prev){
-          prev->next = curr->next;
-          //return the pointer to the start of the block
-        } else {
-          free_list = curr->next;
-  
-        }
+    //found a block that is big enough
+    if(curr->free_mem > total_size){
+      struct block *new_block = (struct block *)((char *)curr + total_size);
+      new_block->size = curr->free_mem;
+      new_block->alloc_mem = total_size;
+      new_block->free_mem = new_block->size - new_block->alloc_mem;
+      //new block is big enough to split
+      if(new_block->free_mem > sizeof(struct block)){
+        struct block *free_block = (struct block *)((char *)new_block + new_block->alloc_mem);
+        free_block->size = new_block->free_mem;
+        free_block->alloc_mem = 0;
+        free_block->free_mem = free_block->size - free_block->alloc_mem;
+        free_block->next = curr->next;
+        new_block->next = free_block;
+        new_block->free_mem = 0;
+        new_block->size = new_block->alloc_mem;
       }
-      //return the pointer to the start of the block
-      return (void *)((char *)curr + sizeof(struct block));
+      else{
+        new_block->next = curr->next;
+
+      }
+    
     }
-    prev = curr;
-    curr = curr->next;
-}
-//if we get here then we didn't find a block big enough
-  void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  if (ptr == MAP_FAILED) {
-    return NULL;
-  }
-  return ptr;
+    else if(curr->free == total_size){
+      //found a block that is exactly the size needed
+
+      
+    }
+    else{
+      //block is too small
+      prev = curr;
+      curr = curr->next;
+
+    }
+  }   
 }
 
 void *__calloc_impl(size_t nmemb, size_t size) {
