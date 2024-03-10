@@ -54,12 +54,15 @@
     provided below for your convenience.
     
 */
-
+#include <stdlib.h>
 #include <stddef.h>
 #include <sys/mman.h>
 #include <stdio.h>
 #include <errno.h>
 #include <string.h>
+#include <unistd.h>
+
+
 
 /* Predefined helper functions */
 
@@ -169,8 +172,8 @@ typedef struct block {
 
 struct block *free_list = NULL;
 
-
-
+//Block list: each region of memory contains several blocks that are linked to their neighbors. This linked list is used to merge blocks that have been split, unmap unused regions
+struct block *block_list = NULL;
 
 /* End of your helper functions */
 
@@ -183,48 +186,88 @@ void *__malloc_impl(size_t size) {
   /* allocates size bytes of memory, 
   RETURNS: pointer to the allocated memory, 
   if size is 0, the function returns NULL or a unique pointer to be passed to free()*/
-  size_t total_size = size + sizeof(struct block);
   if(size == 0){
     return NULL;
   }
+  size_t total_size = size + sizeof(struct block);
   struct block *curr = free_list;
-  struct block *prev = NULL;
+
   while(curr){
     //found a block that is big enough
     if(curr->free_mem > total_size){
-      struct block *new_block = (struct block *)((char *)curr + total_size);
-      new_block->size = curr->free_mem;
-      new_block->alloc_mem = total_size;
+      //creating a new block at the end of the allocated memory
+      char *block_end = (char *)curr + curr->free_mem;
+      struct block *new_block = (struct block *)block_end;
+
+      new_block->size = curr->free_mem - sizeof(struct block);
+      new_block->alloc_mem = size;
       new_block->free_mem = new_block->size - new_block->alloc_mem;
+
+      curr->size = curr->alloc_mem;
+      curr->free_mem = 0;
+      new_block->next = curr->next;
+      curr->next = new_block;
+
       //new block is big enough to split
       if(new_block->free_mem > sizeof(struct block)){
-        struct block *free_block = (struct block *)((char *)new_block + new_block->alloc_mem);
-        free_block->size = new_block->free_mem;
+        char *block_end = (char *)new_block + new_block->free_mem;
+        struct block *free_block = (struct block *)block_end;
+        free_block->size = new_block->free_mem - sizeof(struct block);
         free_block->alloc_mem = 0;
         free_block->free_mem = free_block->size - free_block->alloc_mem;
-        free_block->next = curr->next;
-        new_block->next = free_block;
-        new_block->free_mem = 0;
         new_block->size = new_block->alloc_mem;
+        new_block->free_mem = 0;
+        free_block->next = new_block->next;
+        new_block->next = free_block;
+        if(free_list == NULL){
+          free_list = free_block;
+        }
+        else{
+          struct block *temp = free_list;
+          while(temp){
+            if(temp->next == NULL){
+              temp->next = free_block;
+              break;
+            }
+            temp = temp->next;
+          }
+        }
       }
-      else{
-        new_block->next = curr->next;
+      return (void *)(new_block + 1);
+    }
+    curr = curr->next;
 
+  }
+
+  //no block is big enough, need to allocate a new block using mmap and linking it to the block list
+  size_t page_size = getpagesize();
+  size_t num_pages = (total_size + page_size - 1) / page_size;
+  total_size = num_pages * page_size;
+  struct block *new_block = (struct block *)mmap(NULL, total_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (new_block == MAP_FAILED) {
+      return NULL;
+  }
+  new_block->size = total_size - sizeof(struct block);
+  new_block->alloc_mem = size;
+  new_block->free_mem = new_block->size - new_block->alloc_mem;
+  new_block->next = block_list;
+  if(block_list == NULL){
+    block_list = new_block;
+  }
+  //insert to end of block list
+  else{
+    struct block *temp = block_list;
+    while(temp){
+      if(temp->next == NULL){
+        temp->next = new_block;
+        break;
       }
-    
+      temp = temp->next;
     }
-    else if(curr->free == total_size){
-      //found a block that is exactly the size needed
+  }
 
-      
-    }
-    else{
-      //block is too small
-      prev = curr;
-      curr = curr->next;
+  return (void *)(new_block + 1);
 
-    }
-  }   
 }
 
 void *__calloc_impl(size_t nmemb, size_t size) {
@@ -238,15 +281,16 @@ void *__calloc_impl(size_t nmemb, size_t size) {
   
   */
   size_t total_size;
-  if (!__try_size_t_multiply(&total_size, nmemb, size)) {
-    return NULL;
+  if(__try_size_t_multiply(&total_size, nmemb, size)){
+    void *ptr = __malloc_impl(total_size);
+    if(ptr){
+      __memset(ptr, 0, total_size);
+    }
+    return ptr;
   }
-  void *ptr = __malloc_impl(total_size);
-  if (ptr == NULL) {
-    return NULL;
-  }
-  __memset(ptr, 0, total_size);
-  return ptr;
+  return NULL;
+
+  
 }
 
 void *__realloc_impl(void *ptr, size_t size) {
@@ -259,39 +303,56 @@ void *__realloc_impl(void *ptr, size_t size) {
   if the size is less than the size of the original memory block, the memory block is truncated to the new size
   if the size is greater than the size of the original memory block, the function behaves like malloc() for the specified size
   */
-  if (ptr == NULL) {
+  if(ptr == NULL){
     return __malloc_impl(size);
   }
-  if (size == 0) {
+  if(size == 0){
     __free_impl(ptr);
     return NULL;
   }
   struct block *curr = (struct block *)((char *)ptr - sizeof(struct block));
-  if (curr->size >= size) {
+  if(size <= curr->alloc_mem){
     return ptr;
   }
   void *new_ptr = __malloc_impl(size);
-  if (new_ptr == NULL) {
-    return NULL;
+  if(new_ptr){
+    __memcpy(new_ptr, ptr, curr->alloc_mem);
+    __free_impl(ptr);
   }
-  __memcpy(new_ptr, ptr, curr->size);
-  __free_impl(ptr);
   return new_ptr;
- 
 }
 
 void __free_impl(void *ptr) {
   /*ptr: pointer to the memory to be deallocated,
   RETURNS: nothing
   
+       The free() function frees the memory space pointed to by ptr, which must have been returned by a previous call
+       to malloc(), calloc(), or realloc().  Otherwise, or if free(ptr) has already been called before, undefined be‐
+       havior occurs.  If ptr is NULL, no operation is performed.
+  
   if ptr is NULL, the function does nothing
   */
-  if (ptr == NULL) {
+  if(ptr == NULL){
     return;
   }
   struct block *curr = (struct block *)((char *)ptr - sizeof(struct block));
-  curr->next = free_list;
-  free_list = curr;
+  curr->alloc_mem = 0;
+  curr->free_mem = curr->size;
+  if(free_list == NULL){
+    free_list = curr;
+  }
+  //insert to end of free list
+  else{
+    struct block *temp = free_list;
+    while(temp){
+      if(temp->next == NULL){
+        temp->next = curr;
+        break;
+      }
+      temp = temp->next;
+    }
+  }
+
 }
 
 /* End of the actual malloc/calloc/realloc/free functions */
